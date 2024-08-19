@@ -209,10 +209,6 @@ def generate_maps_and_graphs(focus_zone):
             <div style="background-color: gray; width: 20px; height: 20px;"></div>
             <span style="font-size: 10px; margin-left: 5px;">No recorded trips</span>
         </div>
-        <div style="display: flex; align-items: center; margin-top: 5px;">
-            <img src="https://raw.githubusercontent.com/python-visualization/folium/master/folium/templates/leaflet-1.7.1/images/marker-icon.png" style="width: 15px; height: 25px;">
-            <span style="font-size: 10px; margin-left: 5px;">Focus Zone</span>
-        </div>
     </div>
     '''.format(vmin, vmax, vmax)
 
@@ -521,10 +517,136 @@ def estimate_district_population(df_weekday, df_weekday_arrival, focus_zone):
     return population, population_percent  # Return both absolute numbers and percentages
 
 
+def generate_filtered_map(focus_zone):
+    print(f"Generating filtered map for focus zone: {focus_zone}")
     
+    # Prepare data
+    population = population_df.set_index('TAZ_1270')[2019]
+    mean_population = population[population > 0].mean()
+    population = population.replace(0, mean_population)
+    
+    trips_to_focus = df_weekday[df_weekday['ToZone'] == focus_zone].groupby('fromZone')[['h' + str(i) for i in range(24)]].sum().sum(axis=1)
+    
+    # Merge population and trip data with zones
+    zones_data = zones.merge(
+        pd.DataFrame({
+            'TAZ_1270': population.index, 
+            'population': population,
+            'total_trips': trips_to_focus
+        }), 
+        on='TAZ_1270', 
+        how='left'
+    )
+    zones_data['total_trips'] = zones_data['total_trips'].fillna(0)
+    zones_data['population'] = zones_data['population'].fillna(mean_population)
+    zones_data['trips_per_10k'] = (zones_data['total_trips'] / zones_data['population']) * 10000
+    
+    # Filter zones
+    filtered_zones = zones_data[
+        (zones_data['trips_per_10k'] > 10) & 
+        (zones_data['trips_per_10k'].notna()) &
+        (zones_data['TAZ_1270'] != focus_zone) &
+        (zones_data['population'] >= 25)  # New condition
+    ]
+    
+    # Create Folium map
+    focus_zone_geom = zones[zones['TAZ_1270'] == focus_zone].to_crs(epsg=4326)
+    focus_zone_center = focus_zone_geom.geometry.centroid.iloc[0]
+    m = folium.Map(location=[focus_zone_center.y, focus_zone_center.x], zoom_start=9)
+
+    # Set up color map
+    vmin = 10
+    vmax = np.percentile(filtered_zones['trips_per_10k'], 95)  # 95th percentile for capping
+    colormap = LinearColormap(colors=['#FEE391', '#D9F0A3', '#ADDD8E', '#78C679', '#31A354'], vmin=vmin, vmax=vmax)
+    
+    def style_function(feature):
+        trips = feature['properties']['trips_per_10k']
+        if trips > vmax:
+            return {'fillColor': '#006400', 'color': 'black', 'weight': 1, 'fillOpacity': 0.7}
+        return {'fillColor': colormap(trips), 'color': 'black', 'weight': 1, 'fillOpacity': 0.7}
+
+    # Add GeoJson layer
+    folium.GeoJson(
+        filtered_zones.to_crs(epsg=4326),
+        style_function=style_function,
+        tooltip=folium.GeoJsonTooltip(
+            fields=['TAZ_1270', 'population', 'total_trips', 'trips_per_10k'],
+            aliases=['TAZ_1270:', 'Population:', 'Total Trips:', 'Trips per 10k:'],
+            labels=True,
+            sticky=False,
+            style=("background-color: white; color: #333333; font-family: arial; font-size: 12px; padding: 10px;")
+        )
+    ).add_to(m)
+
+    # Highlight focus zone
+    folium.GeoJson(focus_zone_geom, style_function=lambda x: {'color': 'red', 'weight': 3, 'fillOpacity': 0}).add_to(m)
+
+    # Add a star marker for the focus zone
+    folium.Marker(
+        location=[focus_zone_center.y, focus_zone_center.x],
+        icon=folium.Icon(color='red', icon='star'),
+    ).add_to(m)
+
+    # Add the colormap to the map
+    colormap.add_to(m)
+
+    # Add a custom legend
+    legend_html = f'''
+    <div style="position: fixed; 
+                bottom: 50px; left: 50px; 
+                width: 250px; height: 120px; 
+                background-color: white; 
+                border-radius: 5px; 
+                padding: 10px; 
+                z-index: 9999;">
+        <p style="font-size:14px; margin-bottom: 5px;"><b>Legend</b></p>
+        <p style="font-size:12px; margin-top: 0;">Trips per 10,000 people</p>
+        <div style="display: flex; align-items: center; margin-top: 5px;">
+            <div style="background: linear-gradient(to right, #FEE391, #D9F0A3, #ADDD8E, #78C679, #31A354); 
+                        width: 150px; height: 20px;"></div>
+            <div style="display: flex; justify-content: space-between; width: 150px;">
+                <span style="font-size: 10px;">10</span>
+                <span style="font-size: 10px;">{vmax:.0f}</span>
+            </div>
+        </div>
+        <div style="display: flex; align-items: center; margin-top: 5px;">
+            <div style="background-color: #006400; width: 20px; height: 20px;"></div>
+            <span style="font-size: 10px; margin-left: 5px;">> {vmax:.0f} (95th percentile)</span>
+        </div>
+    </div>
+    '''
+
+    m.get_root().html.add_child(folium.Element(legend_html))
+
+    # Add title
+    title_html = f'''
+    <div style="position: fixed; 
+                top: 10px; left: 50px; width: 800px; 
+                background-color: white; 
+                border-radius: 5px; 
+                padding: 10px; 
+                z-index: 9999;">
+        <h3 align="center" style="font-size:16px;">
+            <b>Filtered Map: Trips to Focus Zone ({focus_zone})</b>
+        </h3>
+        <p style="font-size:12px;">
+            Showing only TAZ_1270 zones with more than 10 trips per 10,000 people to the focus zone and population ≥ 25.
+            Zones with trips > {vmax:.0f} per 10k (95th percentile) are colored dark green.
+        </p>
+    </div>
+    '''
+    m.get_root().html.add_child(folium.Element(title_html))
+
+    # Save Folium map
+    output_path = f'/Users/noamgal/Downloads/NUR/celular1819_v1.3/focus_zone_{focus_zone}_filtered_map.html'
+    m.save(output_path)
+    print(f"Filtered map saved to: {output_path}")
+
+# The main execution block remains the same
 if __name__ == "__main__":
     focus_zone = int(input("Enter the TAZ code for the focus zone: "))
     generate_maps_and_graphs(focus_zone)
+    generate_filtered_map(focus_zone)
 
 
 def compare_two_zones_time_signature(df_weekday, df_weekday_arrival, focus_zone1, focus_zone2, zone1_name, zone2_name):
@@ -555,11 +677,11 @@ def compare_two_zones_time_signature(df_weekday, df_weekday_arrival, focus_zone1
     
     hours = range(24)
 
-    # Plot lines
-    plt.plot(hours, arrivals1, color='#1f77b4', linestyle='-', linewidth=3, label=f'{zone1_name} Arrivals')
-    plt.plot(hours, departures1, color='#1f77b4', linestyle='--', linewidth=3, label=f'{zone1_name} Departures')
-    plt.plot(hours, arrivals2, color='#ff7f0e', linestyle='-', linewidth=3, label=f'{zone2_name} Arrivals')
-    plt.plot(hours, departures2, color='#ff7f0e', linestyle='--', linewidth=3, label=f'{zone2_name} Departures')
+    # Plot lines with markers
+    plt.plot(hours, arrivals1, color='#1f77b4', linestyle='-', linewidth=2, marker='o', markersize=6, label=f'{zone1_name} Arrivals')
+    plt.plot(hours, departures1, color='#1f77b4', linestyle='--', linewidth=2, marker='s', markersize=6, label=f'{zone1_name} Departures')
+    plt.plot(hours, arrivals2, color='#ff7f0e', linestyle='-', linewidth=2, marker='o', markersize=6, label=f'{zone2_name} Arrivals')
+    plt.plot(hours, departures2, color='#ff7f0e', linestyle='--', linewidth=2, marker='s', markersize=6, label=f'{zone2_name} Departures')
 
     # Customize the plot
     plt.title('Comparison of Arrivals and Departures: Beer Sheva ID vs Matam Haifa', fontsize=24, fontweight='bold')
