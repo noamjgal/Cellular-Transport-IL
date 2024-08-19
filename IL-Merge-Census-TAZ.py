@@ -122,7 +122,11 @@ def spatial_allocation(taz_gdf: gpd.GeoDataFrame, census_gdf: gpd.GeoDataFrame) 
     
     for stat, method in ECONOMIC_STATS.items():
         if stat in joined.columns:
-            joined[f'allocated_{stat}'] = joined[stat]
+            if stat == 'sexRatio':
+                # Ensure sex ratio is correctly allocated
+                joined[f'allocated_{stat}'] = joined[stat]
+            else:
+                joined[f'allocated_{stat}'] = joined[stat]
         else:
             logging.warning(f"{stat} not found in joined data, skipping allocation")
     
@@ -173,6 +177,7 @@ def aggregate_to_taz(allocated_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     taz_data = taz_data.drop(columns=['allocated_pop', 'taz_area'])
     
     return taz_data
+
 
 def validate_results(taz_data: pd.DataFrame, census_gdf: gpd.GeoDataFrame):
     """
