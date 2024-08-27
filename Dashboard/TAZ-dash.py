@@ -19,8 +19,8 @@ app.layout = html.Div([
     html.H1("Mobility Data Dashboard"),
     dcc.Dropdown(
         id='taz-dropdown',
-        options=[{'label': str(i), 'value': i} for i in preprocessed_data['focus_zone'].unique()],
-        value=preprocessed_data['focus_zone'].min(),
+        options=[{'label': str(i), 'value': i} for i in preprocessed_data['ToZone'].unique()],
+        value=preprocessed_data['ToZone'].min(),
         style={'width': '50%'}
     ),
     dcc.Graph(id='map-output'),
@@ -31,29 +31,21 @@ app.layout = html.Div([
 
 def create_map(focus_zone):
     # Filter data for the focus zone
-    zone_data = preprocessed_data[preprocessed_data['focus_zone'] == focus_zone]
+    zone_data = preprocessed_data[preprocessed_data['ToZone'] == focus_zone]
     
     # Merge with zones geodataframe
-    gdf = zones.merge(zone_data, left_on='TAZ_1270', right_on='TAZ_1270')
-    
-    # Create a buffer around the focus zone
-    buffer_distance_km = 40
-    focus_zone_geo = gdf[gdf['TAZ_1270'] == focus_zone]
-    buffer = focus_zone_geo.geometry.buffer(buffer_distance_km * 1000)  # Convert km to meters
-    
-    # Select zones that intersect with the buffer
-    gdf_within_buffer = gdf[gdf.intersects(buffer.iloc[0])]
+    gdf = zones.merge(zone_data, left_on='TAZ_1270', right_on='fromZone')
     
     # Create the map
-    fig = px.choropleth_mapbox(gdf_within_buffer, 
-                               geojson=gdf_within_buffer.geometry.__geo_interface__, 
-                               locations=gdf_within_buffer.index, 
+    fig = px.choropleth_mapbox(gdf, 
+                               geojson=gdf.geometry.__geo_interface__, 
+                               locations=gdf.index, 
                                color='trips_per_10k',
                                color_continuous_scale="Viridis",
                                mapbox_style="carto-positron",
                                zoom=9, 
-                               center={"lat": focus_zone_geo.geometry.centroid.y.iloc[0], 
-                                       "lon": focus_zone_geo.geometry.centroid.x.iloc[0]},
+                               center={"lat": gdf.geometry.centroid.y.mean(), 
+                                       "lon": gdf.geometry.centroid.x.mean()},
                                opacity=0.5,
                                labels={'trips_per_10k':'Trips per 10k people'})
 
@@ -62,41 +54,21 @@ def create_map(focus_zone):
     return fig
 
 def plot_trips_by_distance(focus_zone):
-    zone_data = preprocessed_data[preprocessed_data['focus_zone'] == focus_zone]
+    zone_data = preprocessed_data[preprocessed_data['ToZone'] == focus_zone]
     
     fig = px.histogram(zone_data, x='distance', y='total_trips', 
                        nbins=30, range_x=[0, 150],
                        labels={'distance': 'Distance (km)', 'total_trips': 'Number of Trips'},
                        title=f'Histogram of Trips to Zone {focus_zone} by Distance')
     
-    mean_distance = np.average(zone_data['distance'], weights=zone_data['total_trips'])
-    median_distance = np.median(np.repeat(zone_data['distance'], zone_data['total_trips'].astype(int)))
-    total_trips = zone_data['total_trips'].sum()
-    
-    stats_text = f'Mean Trip Distance: {mean_distance:.2f} km<br>' \
-                 f'Median Trip Distance: {median_distance:.2f} km<br>' \
-                 f'Total Trips: {total_trips:,.0f}'
-    
-    fig.add_annotation(
-        x=0.95, y=0.95,
-        xref='paper', yref='paper',
-        text=stats_text,
-        showarrow=False,
-        font=dict(size=12),
-        align='right',
-        bgcolor='rgba(255, 255, 255, 0.8)',
-        bordercolor='black',
-        borderwidth=1
-    )
-    
     return fig
 
 def plot_time_signature(focus_zone):
-    zone_data = preprocessed_data[preprocessed_data['focus_zone'] == focus_zone].iloc[0]
+    zone_data = preprocessed_data[preprocessed_data['ToZone'] == focus_zone]
     
     hours = list(range(24))
-    arrivals = [zone_data[f'arrivals_h{i}'] for i in hours]
-    departures = [zone_data[f'departures_h{i}'] for i in hours]
+    arrivals = [zone_data[f'h{i}'].sum() for i in hours]
+    departures = preprocessed_data[preprocessed_data['fromZone'] == focus_zone][[f'h{i}' for i in hours]].sum()
     
     fig = go.Figure()
     fig.add_trace(go.Bar(x=hours, y=arrivals, name='Arrivals', marker_color='blue'))
@@ -112,11 +84,11 @@ def plot_time_signature(focus_zone):
     return fig
 
 def estimate_district_population(focus_zone):
-    zone_data = preprocessed_data[preprocessed_data['focus_zone'] == focus_zone].iloc[0]
+    zone_data = preprocessed_data[preprocessed_data['ToZone'] == focus_zone]
     
     hours = list(range(6, 24))
-    arrivals = [zone_data[f'arrivals_h{i}'] for i in hours]
-    departures = [zone_data[f'departures_h{i}'] for i in hours]
+    arrivals = [zone_data[f'h{i}'].sum() for i in hours]
+    departures = preprocessed_data[preprocessed_data['fromZone'] == focus_zone][[f'h{i}' for i in hours]].sum()
     
     population = [0]
     for arrival, departure in zip(arrivals, departures):
