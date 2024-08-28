@@ -24,14 +24,19 @@ df_weekday['total_trips'] = df_weekday[hour_cols].sum(axis=1)
 
 print("Step 4/5: Calculating trips per 10k population")
 df_weekday['trips_per_10k'] = (df_weekday['total_trips'] / df_weekday['population']) * 10000
+df_weekday['trips_per_10k'] = df_weekday['trips_per_10k'].replace([np.inf, -np.inf], np.nan).fillna(0)
 
 print("Step 5/5: Calculating distances (this may take a while)")
 zone_centroids = zones.set_index('TAZ_1270').geometry.centroid
 
 def calculate_distance(row):
-    from_centroid = zone_centroids.loc[row['fromZone']]
-    to_centroid = zone_centroids.loc[row['ToZone']]
-    return from_centroid.distance(to_centroid) / 1000
+    try:
+        from_centroid = zone_centroids.loc[row['fromZone']]
+        to_centroid = zone_centroids.loc[row['ToZone']]
+        return from_centroid.distance(to_centroid) / 1000
+    except KeyError:
+        print(f"KeyError: fromZone {row['fromZone']} or ToZone {row['ToZone']} not found in centroids")
+        return np.nan
 
 tqdm.pandas(desc="Calculating distances")
 df_weekday['distance'] = df_weekday.progress_apply(calculate_distance, axis=1)
